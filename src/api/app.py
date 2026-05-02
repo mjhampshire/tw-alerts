@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .routes import router, init_repos
+from .routes import router, trends_router, init_repos
 from ..alerts.repository import AlertRepository
 from ..data.repository import MetricRepository
 
@@ -46,6 +46,7 @@ app = FastAPI(
 )
 
 app.include_router(router)
+app.include_router(trends_router)
 
 
 @app.get("/health")

@@ -1,6 +1,6 @@
-"""API routes for alerts."""
+"""API routes for alerts and trends."""
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -10,8 +10,10 @@ from ..alerts.repository import AlertRepository
 from ..data.repository import MetricRepository
 from ..core.metrics import get_all_metrics, get_metric
 from ..core.anomaly import detect_anomaly
+from ..core.trend import calculate_trend, TrendDirection
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
+trends_router = APIRouter(prefix="/api/v1/trends", tags=["trends"])
 
 # Repositories (initialized by app.py)
 alert_repo: Optional[AlertRepository] = None
@@ -233,3 +235,142 @@ async def list_metrics() -> dict:
             for m in metrics
         ]
     }
+
+
+# =============================================================================
+# Trend Response Models
+# =============================================================================
+
+class TrendResponse(BaseModel):
+    """Response for a single metric trend."""
+    metric_name: str
+    metric_display_name: str
+    tenant_id: str
+    direction: str  # "up", "down", "stable", "insufficient_data"
+    percentage_change: float
+    recent_average: float
+    prior_average: float
+    confidence: str  # "high", "medium", "low"
+    description: str
+    recent_period_days: int
+    prior_period_days: int
+
+
+class AllTrendsResponse(BaseModel):
+    """Response containing trends for all metrics."""
+    tenant_id: str
+    trends: list[dict]
+    generated_at: str
+
+
+# =============================================================================
+# Trend Routes
+# =============================================================================
+
+@trends_router.get("/{tenant_id}/{metric_name}")
+async def get_metric_trend(
+    tenant_id: str,
+    metric_name: str,
+    recent_days: int = Query(7, ge=3, le=30, description="Days in recent period"),
+    prior_days: int = Query(7, ge=3, le=30, description="Days in prior period"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format, defaults to yesterday)"),
+) -> TrendResponse:
+    """
+    Get trend for a specific metric.
+
+    Compares recent period average to prior period average.
+    Returns direction (up/down/stable) and percentage change.
+
+    Example response:
+    ```json
+    {
+        "metric_name": "wishlist_items_notify_me",
+        "direction": "up",
+        "percentage_change": 15.3,
+        "description": "Trending up +15.3% (142 → 164)",
+        "confidence": "high"
+    }
+    ```
+    """
+    if not metric_repo:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    metric = get_metric(metric_name)
+    if not metric:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown metric: {metric_name}. Use /api/v1/alerts/metrics/list to see available metrics."
+        )
+
+    target_date = date.fromisoformat(end_date) if end_date else date.today() - timedelta(days=1)
+
+    recent_values, prior_values = metric_repo.get_trend_data(
+        metric, tenant_id, target_date, recent_days, prior_days
+    )
+
+    result = calculate_trend(
+        metric_name=metric.name,
+        tenant_id=tenant_id,
+        recent_values=recent_values,
+        prior_values=prior_values,
+    )
+
+    return TrendResponse(
+        metric_name=result.metric_name,
+        metric_display_name=metric.display_name,
+        tenant_id=result.tenant_id,
+        direction=result.direction.value,
+        percentage_change=result.percentage_change,
+        recent_average=result.recent_average,
+        prior_average=result.prior_average,
+        confidence=result.confidence,
+        description=result.description,
+        recent_period_days=result.recent_period_days,
+        prior_period_days=result.prior_period_days,
+    )
+
+
+@trends_router.get("/{tenant_id}")
+async def get_all_trends(
+    tenant_id: str,
+    recent_days: int = Query(7, ge=3, le=30, description="Days in recent period"),
+    prior_days: int = Query(7, ge=3, le=30, description="Days in prior period"),
+) -> AllTrendsResponse:
+    """
+    Get trends for all metrics for a tenant.
+
+    Useful for dashboard overview showing all metric trends at once.
+    """
+    if not metric_repo:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    target_date = date.today() - timedelta(days=1)
+    metrics = get_all_metrics()
+    trends = []
+
+    for metric in metrics:
+        recent_values, prior_values = metric_repo.get_trend_data(
+            metric, tenant_id, target_date, recent_days, prior_days
+        )
+
+        result = calculate_trend(
+            metric_name=metric.name,
+            tenant_id=tenant_id,
+            recent_values=recent_values,
+            prior_values=prior_values,
+        )
+
+        trends.append({
+            "metric_name": result.metric_name,
+            "metric_display_name": metric.display_name,
+            "direction": result.direction.value,
+            "percentage_change": round(result.percentage_change, 1),
+            "description": result.description,
+            "confidence": result.confidence,
+        })
+
+    return AllTrendsResponse(
+        tenant_id=tenant_id,
+        trends=trends,
+        generated_at=date.today().isoformat(),
+    )

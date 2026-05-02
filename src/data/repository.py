@@ -161,3 +161,69 @@ class MetricRepository:
                 })
 
         return results
+
+    def get_daily_values(
+        self,
+        metric: MetricDefinition,
+        tenant_id: str,
+        end_date: date,
+        days: int = 14,
+    ) -> list[float]:
+        """
+        Get daily metric values for the past N days.
+
+        Used for trend analysis.
+
+        Args:
+            metric: Metric definition
+            tenant_id: Tenant ID
+            end_date: End date (most recent)
+            days: Number of days to fetch
+
+        Returns:
+            List of values, oldest first (chronological order)
+        """
+        values = []
+
+        for day_offset in range(days - 1, -1, -1):  # Oldest to newest
+            target = end_date - timedelta(days=day_offset)
+            value = self.get_metric_value(metric, tenant_id, target)
+            values.append(value)
+
+        return values
+
+    def get_trend_data(
+        self,
+        metric: MetricDefinition,
+        tenant_id: str,
+        end_date: date,
+        recent_days: int = 7,
+        prior_days: int = 7,
+    ) -> tuple[list[float], list[float]]:
+        """
+        Get data for trend comparison: recent period vs prior period.
+
+        Args:
+            metric: Metric definition
+            tenant_id: Tenant ID
+            end_date: End of recent period
+            recent_days: Days in recent period
+            prior_days: Days in prior period
+
+        Returns:
+            Tuple of (recent_values, prior_values)
+        """
+        # Recent period: last N days ending at end_date
+        recent_values = []
+        for day_offset in range(recent_days - 1, -1, -1):
+            target = end_date - timedelta(days=day_offset)
+            recent_values.append(self.get_metric_value(metric, tenant_id, target))
+
+        # Prior period: N days before recent period
+        prior_start = end_date - timedelta(days=recent_days + prior_days - 1)
+        prior_values = []
+        for day_offset in range(prior_days):
+            target = prior_start + timedelta(days=day_offset)
+            prior_values.append(self.get_metric_value(metric, tenant_id, target))
+
+        return recent_values, prior_values

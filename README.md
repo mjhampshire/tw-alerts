@@ -40,6 +40,8 @@ python -m src.jobs.detect_anomalies
 
 ## API Endpoints
 
+### Alerts
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/alerts/{tenant_id}` | List alerts for tenant |
@@ -48,6 +50,25 @@ python -m src.jobs.detect_anomalies
 | PUT | `/api/v1/alerts/{tenant_id}/{alert_id}` | Update alert status |
 | POST | `/api/v1/alerts/{tenant_id}/check` | Manual metric check |
 | GET | `/api/v1/alerts/metrics/list` | List available metrics |
+
+### Trends
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/trends/{tenant_id}` | Get trends for all metrics |
+| GET | `/api/v1/trends/{tenant_id}/{metric_name}` | Get trend for specific metric |
+
+**Example trend response:**
+```json
+{
+  "metric_name": "wishlist_items_notify_me",
+  "metric_display_name": "Wishlist Items (Notify Me)",
+  "direction": "up",
+  "percentage_change": 15.3,
+  "description": "Trending up +15.3% (142 → 164)",
+  "confidence": "high"
+}
+```
 
 ## Documentation
 

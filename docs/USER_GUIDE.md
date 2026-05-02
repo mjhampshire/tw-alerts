@@ -2,7 +2,10 @@
 
 ## Overview
 
-TWC Alerts monitors key business metrics and notifies you when unusual changes occur. The system runs automatically each day and sends alerts via Slack, email, or webhook when it detects anomalies.
+TWC Alerts provides two types of metric insights:
+
+1. **Anomaly Alerts** - Notifications when unusual changes occur (something to look out for)
+2. **Trend Analysis** - Advisory information showing if metrics are trending up, down, or stable
 
 ## How It Works
 
@@ -206,3 +209,68 @@ curl -X POST http://alerts-api/api/v1/alerts/{tenant_id}/check \
   -H "Content-Type: application/json" \
   -d '{"metric_name": "wishlist_items_notify_me", "target_date": "2024-01-15"}'
 ```
+
+## Trend Analysis
+
+Trends are different from alerts. While alerts notify you of unusual events, trends tell you the general direction of a metric over time.
+
+### Getting Trends
+
+**Single metric:**
+```bash
+curl http://alerts-api/api/v1/trends/{tenant_id}/wishlist_items_notify_me
+```
+
+**All metrics:**
+```bash
+curl http://alerts-api/api/v1/trends/{tenant_id}
+```
+
+### Understanding Trend Responses
+
+```json
+{
+  "metric_name": "wishlist_items_notify_me",
+  "metric_display_name": "Wishlist Items (Notify Me)",
+  "direction": "up",
+  "percentage_change": 15.3,
+  "recent_average": 164,
+  "prior_average": 142,
+  "confidence": "high",
+  "description": "Trending up +15.3% (142 → 164)"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| **direction** | `up`, `down`, `stable`, or `insufficient_data` |
+| **percentage_change** | Change between recent and prior period |
+| **recent_average** | Average value over recent period (default 7 days) |
+| **prior_average** | Average value over prior period (7 days before recent) |
+| **confidence** | `high`, `medium`, or `low` based on data consistency |
+| **description** | Human-readable summary for display |
+
+### Trend Thresholds
+
+- **Up**: 5%+ increase from prior to recent period
+- **Down**: 5%+ decrease from prior to recent period
+- **Stable**: Less than 5% change in either direction
+
+### Custom Time Periods
+
+Adjust the comparison periods:
+
+```bash
+# Compare last 14 days to previous 14 days
+curl "http://alerts-api/api/v1/trends/{tenant_id}/revenue_generated?recent_days=14&prior_days=14"
+```
+
+### Using Trends in Your Frontend
+
+Trends are designed to be displayed as advisory information:
+
+- "Wishlist signups are **trending up** +15%"
+- "Revenue is **stable** this week"
+- "Notifications are **trending down** -8%"
+
+The `description` field provides ready-to-use text for display.
