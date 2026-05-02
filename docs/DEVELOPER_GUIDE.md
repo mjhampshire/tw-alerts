@@ -6,19 +6,29 @@
 src/
 ├── api/
 │   ├── app.py          # FastAPI application entry point
-│   └── routes.py       # API endpoint definitions
+│   └── routes.py       # API endpoint definitions (alerts + trends)
 ├── alerts/
 │   ├── models.py       # Alert, AlertStatus, AlertSeverity dataclasses
 │   ├── repository.py   # ClickHouse CRUD operations for alerts
 │   └── notifier.py     # Webhook, Email, Slack notification services
 ├── core/
 │   ├── anomaly.py      # Anomaly detection algorithm
+│   ├── trend.py        # Trend analysis (up/down/stable)
 │   └── metrics.py      # Metric definitions
 ├── data/
 │   └── repository.py   # ClickHouse queries for metric values
 └── jobs/
     └── detect_anomalies.py  # CRON job entry point
 ```
+
+## Two Analysis Systems
+
+This project provides two complementary analysis systems:
+
+| System | Purpose | Use Case |
+|--------|---------|----------|
+| **Anomaly Detection** | Detect unusual single-day deviations | "Something unexpected happened" |
+| **Trend Analysis** | Show general direction over time | "How are things going overall?" |
 
 ## Adding a New Metric
 
@@ -260,6 +270,111 @@ def get_metric(name: str, tenant_id: str = None) -> MetricDefinition:
     return metric
 ```
 
+## Trend Analysis System
+
+Trend analysis compares a recent period to a prior period to determine direction.
+
+### How It Works
+
+```python
+# src/core/trend.py
+
+def calculate_trend(
+    metric_name: str,
+    tenant_id: str,
+    recent_values: list[float],  # e.g., last 7 days
+    prior_values: list[float],   # e.g., 7 days before that
+    up_threshold: float = 5.0,   # % change to consider "up"
+    down_threshold: float = -5.0,
+) -> TrendResult:
+    recent_avg = mean(recent_values)
+    prior_avg = mean(prior_values)
+
+    percentage_change = ((recent_avg - prior_avg) / prior_avg) * 100
+
+    if percentage_change >= up_threshold:
+        direction = TrendDirection.UP
+    elif percentage_change <= down_threshold:
+        direction = TrendDirection.DOWN
+    else:
+        direction = TrendDirection.STABLE
+```
+
+### TrendResult Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `direction` | TrendDirection | UP, DOWN, STABLE, or INSUFFICIENT_DATA |
+| `percentage_change` | float | Change from prior to recent period |
+| `recent_average` | float | Average of recent period values |
+| `prior_average` | float | Average of prior period values |
+| `confidence` | str | "high", "medium", or "low" |
+| `description` | str | Human-readable summary |
+
+### Confidence Calculation
+
+Confidence is based on data consistency:
+
+- **High**: Low variance and consistent direction within the period
+- **Medium**: Some variance but clear direction
+- **Low**: High variance or mixed signals
+
+```python
+def _calculate_confidence(recent_values, prior_values, direction):
+    # Coefficient of variation (CV) measures relative variance
+    recent_cv = stdev(recent_values) / mean(recent_values)
+    prior_cv = stdev(prior_values) / mean(prior_values)
+
+    # Check if values consistently move in the trend direction
+    consistency_ratio = count_consistent_moves / total_moves
+
+    if avg_cv < 0.2 and consistency_ratio >= 0.6:
+        return "high"
+    elif avg_cv > 0.5 or consistency_ratio < 0.4:
+        return "low"
+    else:
+        return "medium"
+```
+
+### Customizing Trend Thresholds
+
+To change when a metric is considered "trending":
+
+```python
+# Default: 5% change required
+result = calculate_trend(
+    metric_name="revenue",
+    tenant_id="tenant",
+    recent_values=recent,
+    prior_values=prior,
+    up_threshold=10.0,   # Require 10% increase for "up"
+    down_threshold=-10.0, # Require 10% decrease for "down"
+)
+```
+
+### Adding Trend Data to Repository
+
+The `MetricRepository` provides methods for fetching trend data:
+
+```python
+# Get recent vs prior period data
+recent_values, prior_values = metric_repo.get_trend_data(
+    metric=metric,
+    tenant_id="tenant",
+    end_date=date.today(),
+    recent_days=7,
+    prior_days=7,
+)
+
+# Get consecutive daily values
+daily_values = metric_repo.get_daily_values(
+    metric=metric,
+    tenant_id="tenant",
+    end_date=date.today(),
+    days=14,
+)
+```
+
 ## Testing
 
 ### Unit Tests
@@ -300,6 +415,65 @@ def test_anomaly_detection_drop():
 
     assert result.is_anomaly
     assert result.anomaly_type == "drop"
+```
+
+### Trend Tests
+
+```python
+# tests/test_trend.py
+from src.core.trend import calculate_trend, TrendDirection
+
+def test_trend_up():
+    recent = [150, 160, 155, 170, 165, 180, 175]  # Avg ~165
+    prior = [100, 110, 105, 115, 108, 112, 106]   # Avg ~108
+
+    result = calculate_trend(
+        metric_name="test",
+        tenant_id="test",
+        recent_values=recent,
+        prior_values=prior,
+    )
+
+    assert result.direction == TrendDirection.UP
+    assert result.percentage_change > 50  # ~53% increase
+
+def test_trend_down():
+    recent = [80, 75, 78, 72, 70, 68, 65]
+    prior = [120, 115, 118, 122, 125, 119, 121]
+
+    result = calculate_trend(
+        metric_name="test",
+        tenant_id="test",
+        recent_values=recent,
+        prior_values=prior,
+    )
+
+    assert result.direction == TrendDirection.DOWN
+    assert result.percentage_change < -30
+
+def test_trend_stable():
+    recent = [100, 102, 98, 101, 99, 103, 97]
+    prior = [98, 100, 102, 97, 101, 99, 103]
+
+    result = calculate_trend(
+        metric_name="test",
+        tenant_id="test",
+        recent_values=recent,
+        prior_values=prior,
+    )
+
+    assert result.direction == TrendDirection.STABLE
+    assert abs(result.percentage_change) < 5
+
+def test_trend_insufficient_data():
+    result = calculate_trend(
+        metric_name="test",
+        tenant_id="test",
+        recent_values=[100, 110],  # Only 2 values
+        prior_values=[90, 95],
+    )
+
+    assert result.direction == TrendDirection.INSUFFICIENT_DATA
 ```
 
 ### Integration Tests
@@ -383,4 +557,35 @@ print(f"Is anomaly: {result.is_anomaly}")
 print(f"Type: {result.anomaly_type}")
 print(f"Z-score: {result.z_score}")
 print(f"Percentage change: {result.percentage_change}%")
+```
+
+### Simulate Trend Analysis
+
+```python
+from src.core.trend import calculate_trend
+
+result = calculate_trend(
+    metric_name="wishlist_items",
+    tenant_id="test",
+    recent_values=[150, 160, 155, 170, 165, 180, 175],
+    prior_values=[120, 125, 118, 130, 122, 128, 125],
+)
+
+print(f"Direction: {result.direction.value}")
+print(f"Change: {result.percentage_change:+.1f}%")
+print(f"Description: {result.description}")
+print(f"Confidence: {result.confidence}")
+```
+
+### Test Trend API Endpoint
+
+```python
+from fastapi.testclient import TestClient
+from src.api.app import app
+
+client = TestClient(app)
+
+# With mock data injection (requires ClickHouse or mocking)
+response = client.get("/api/v1/trends/tenant-id/wishlist_items_notify_me")
+print(response.json())
 ```
